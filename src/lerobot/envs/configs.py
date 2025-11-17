@@ -123,6 +123,50 @@ class PushtEnv(EnvConfig):
         }
 
 
+@EnvConfig.register_subclass("prbench")
+@dataclass
+class PrbenchEnv(EnvConfig):
+    # Gym id is "prbench/Motion2D-p0-v0" (and similar variants)
+    task: str | None = "Motion2D-p0-v0"
+    fps: int = 10
+    episode_length: int = 500
+    render_mode: str = "rgb_array"
+    # Adapt features to Motion2D: state (19), action (5), image (64x64x3)
+    features: dict[str, PolicyFeature] = field(
+        default_factory=lambda: {
+            ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(5,)),
+            "state": PolicyFeature(type=FeatureType.STATE, shape=(19,)),
+            "pixels": PolicyFeature(type=FeatureType.VISUAL, shape=(64, 64, 3)),
+        }
+    )
+    features_map: dict[str, str] = field(
+        default_factory=lambda: {
+            ACTION: ACTION,
+            "state": OBS_STATE,
+            "pixels": OBS_IMAGE,
+        }
+    )
+
+    def __post_init__(self):
+        # Dynamically set state dimension based on task variant.
+        # p0 -> 19-dim, p1 -> 39-dim (others default to p0 for now).
+        task_lower = (self.task or "").lower()
+        state_dim = 19
+        if "-p1-" in task_lower or task_lower.endswith("-p1-v0"):
+            state_dim = 39
+        # Update the state feature shape if present
+        if "state" in self.features:
+            self.features["state"] = PolicyFeature(type=FeatureType.STATE, shape=(state_dim,))
+
+    @property
+    def gym_kwargs(self) -> dict:
+        # prbench envs accept standard gym kwargs; keep minimal
+        return {
+            "render_mode": self.render_mode,
+            "max_episode_steps": self.episode_length,
+        }
+
+
 @EnvConfig.register_subclass("xarm")
 @dataclass
 class XarmEnv(EnvConfig):

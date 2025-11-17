@@ -30,7 +30,7 @@ from lerobot.utils.constants import OBS_ENV_STATE, OBS_IMAGE, OBS_IMAGES, OBS_ST
 from lerobot.utils.utils import get_channel_first_image_shape
 
 
-def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Tensor]:
+def preprocess_observation(observations: Any) -> dict[str, Tensor]:
     # TODO(aliberts, rcadene): refactor this to use features from the environment (no hardcoding)
     """Convert environment observation to LeRobot format observation.
     Args:
@@ -38,15 +38,33 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     Returns:
         Dictionary of observation batches with keys renamed to LeRobot format and values as tensors.
     """
+    # Handle raw numpy observation (e.g., prbench Motion2D returns state only)
+    if isinstance(observations, np.ndarray):
+        # Treat as state-only vector
+        state_tensor = torch.from_numpy(observations).float()
+        if state_tensor.dim() == 1:
+            state_tensor = state_tensor.unsqueeze(0)
+        return {OBS_STATE: state_tensor}
+
     # map to expected inputs for the policy
     return_observations = {}
-    if "pixels" in observations:
-        if isinstance(observations["pixels"], dict):
-            imgs = {f"{OBS_IMAGES}.{key}": img for key, img in observations["pixels"].items()}
+    if "pixels" in observations or "image" in observations:
+        # Normalize to an images dict called `raw_imgs`
+        if "pixels" in observations:
+            source = observations["pixels"]
         else:
-            imgs = {OBS_IMAGE: observations["pixels"]}
+            source = observations["image"]
 
-        for imgkey, img in imgs.items():
+        if isinstance(source, dict):
+            raw_imgs = {f"{OBS_IMAGES}.{key}": img for key, img in source.items()}
+        else:
+            # Map single image to both observation.image and observation.images.cam0 for compatibility
+            raw_imgs = {
+                OBS_IMAGE: source,
+                f"{OBS_IMAGES}.cam0": source,
+            }
+
+        for imgkey, img in raw_imgs.items():
             # TODO(aliberts, rcadene): use transforms.ToTensor()?
             img_tensor = torch.from_numpy(img)
 
@@ -76,10 +94,18 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
         return_observations[OBS_ENV_STATE] = env_state
 
     # TODO(rcadene): enable pixels only baseline with `obs_type="pixels"` in environment by removing
-    agent_pos = torch.from_numpy(observations["agent_pos"]).float()
-    if agent_pos.dim() == 1:
-        agent_pos = agent_pos.unsqueeze(0)
-    return_observations[OBS_STATE] = agent_pos
+    # Support both 'agent_pos' (PushT style) and 'state' (prbench geom2d style)
+    state_array = None
+    if "agent_pos" in observations:
+        state_array = observations["agent_pos"]
+    elif "state" in observations:
+        state_array = observations["state"]
+
+    if state_array is not None:
+        agent_pos = torch.from_numpy(state_array).float()
+        if agent_pos.dim() == 1:
+            agent_pos = agent_pos.unsqueeze(0)
+        return_observations[OBS_STATE] = agent_pos
 
     return return_observations
 
@@ -154,7 +180,11 @@ def add_envs_task(env: gym.vector.VectorEnv, observation: dict[str, Any]) -> dic
 
         observation["task"] = task_result
     else:  #  For envs without language instructions, e.g. aloha transfer cube and etc.
-        num_envs = observation[list(observation.keys())[0]].shape[0]
+        # If observation is empty, default to batch size 1
+        if len(observation) == 0:
+            num_envs = 1
+        else:
+            num_envs = observation[list(observation.keys())[0]].shape[0]
         observation["task"] = ["" for _ in range(num_envs)]
     return observation
 

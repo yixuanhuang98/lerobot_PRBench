@@ -136,6 +136,20 @@ def rollout(
     # Reset the policy and environments.
     policy.reset()
     observation, info = env.reset(seed=seeds)
+    # Normalize initial observation: ensure dict with state and optionally pixels via render()
+    if not isinstance(observation, dict):
+        frames = None
+        try:
+            frames_list = env.call("render")
+            if isinstance(frames_list, list) and len(frames_list) > 0:
+                import numpy as _np
+                frames = _np.stack(frames_list, axis=0)
+        except Exception:
+            frames = None
+        if frames is not None:
+            observation = {"state": observation, "pixels": frames}
+        else:
+            observation = {"state": observation}
     if render_callback is not None:
         render_callback(env)
 
@@ -166,6 +180,42 @@ def rollout(
         # TODO: works with SyncVectorEnv but not AsyncVectorEnv
         observation = add_envs_task(env, observation)
         observation = preprocessor(observation)
+        # Ensure both single-image and multi-cam keys are present for diffusion stacking
+        if (
+            "observation.image" not in observation
+            and "observation.images.cam0" in observation
+        ):
+            observation["observation.image"] = observation["observation.images.cam0"]
+        if (
+            "observation.images.cam0" not in observation
+            and "observation.image" in observation
+        ):
+            observation["observation.images.cam0"] = observation["observation.image"]
+        # Fabricate missing image keys if policy expects images
+        try:
+            needed = list(policy.config.image_features.keys()) if hasattr(policy.config, "image_features") else []
+        except Exception:
+            needed = []
+        if needed:
+            # Determine batch size from any tensor in observation
+            batch_size = None
+            for v in observation.values():
+                if isinstance(v, torch.Tensor) and v.dim() > 0:
+                    batch_size = v.shape[0]
+                    break
+            if batch_size is None:
+                batch_size = 1
+            for img_key in needed:
+                if img_key not in observation:
+                    # Try to copy from any existing image
+                    src = observation.get("observation.images.cam0") or observation.get("observation.image")
+                    if isinstance(src, torch.Tensor):
+                        observation[img_key] = src
+                    else:
+                        # Create black image of expected shape (C,H,W)
+                        shape = policy.config.image_features[img_key].shape  # (C,H,W)
+                        _dev = next(policy.parameters()).device
+                        observation[img_key] = torch.zeros((batch_size, *shape), dtype=torch.float32, device=_dev)
         with torch.inference_mode():
             action = policy.select_action(observation)
         action = postprocessor(action)
@@ -176,15 +226,37 @@ def rollout(
 
         # Apply the next action.
         observation, reward, terminated, truncated, info = env.step(action_numpy)
+        # Normalize observation format after step as well
+        if not isinstance(observation, dict):
+            frames = None
+            try:
+                frames_list = env.call("render")
+                if isinstance(frames_list, list) and len(frames_list) > 0:
+                    import numpy as _np
+                    frames = _np.stack(frames_list, axis=0)
+            except Exception:
+                frames = None
+            if frames is not None:
+                observation = {"state": observation, "pixels": frames}
+            else:
+                observation = {"state": observation}
         if render_callback is not None:
             render_callback(env)
 
-        # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
-        # available of none of the envs finished.
-        if "final_info" in info:
-            successes = [info["is_success"] if info is not None else False for info in info["final_info"]]
-        else:
-            successes = [False] * env.num_envs
+        # Derive per-env success: prefer explicit flags, otherwise infer terminated and not truncated
+        successes = [False] * env.num_envs
+        if "final_info" in info and isinstance(info["final_info"], (list, tuple)):
+            for idx, finfo in enumerate(info["final_info"]):
+                if isinstance(finfo, dict):
+                    if "is_success" in finfo:
+                        successes[idx] = bool(finfo["is_success"])
+                    elif "success" in finfo:
+                        successes[idx] = bool(finfo["success"])
+                    else:
+                        try:
+                            successes[idx] = bool(terminated[idx] and not truncated[idx])
+                        except Exception:
+                            successes[idx] = False
 
         # Keep track of which environments are done so far.
         # Mark the episode as done if we reach the maximum step limit.

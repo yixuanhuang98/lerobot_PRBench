@@ -17,7 +17,7 @@ import importlib
 
 import gymnasium as gym
 
-from lerobot.envs.configs import AlohaEnv, EnvConfig, LiberoEnv, PushtEnv, XarmEnv
+from lerobot.envs.configs import AlohaEnv, EnvConfig, LiberoEnv, PushtEnv, XarmEnv, PrbenchEnv
 
 
 def make_env_config(env_type: str, **kwargs) -> EnvConfig:
@@ -29,6 +29,8 @@ def make_env_config(env_type: str, **kwargs) -> EnvConfig:
         return XarmEnv(**kwargs)
     elif env_type == "libero":
         return LiberoEnv(**kwargs)
+    elif env_type == "prbench":
+        return PrbenchEnv(**kwargs)
     else:
         raise ValueError(f"Policy type '{env_type}' is not available.")
 
@@ -75,14 +77,26 @@ def make_env(
             env_cls=env_cls,
         )
 
-    package_name = f"gym_{cfg.type}"
-    try:
-        importlib.import_module(package_name)
-    except ModuleNotFoundError as e:
-        print(f"{package_name} is not installed. Please install it with `pip install 'lerobot[{cfg.type}]'`")
-        raise e
+    # Special-case prbench: environments are registered under the 'prbench' package
+    if cfg.type == "prbench":
+        try:
+            import prbench  # noqa: F401
+            # Register all prbench envs (no-op if already registered)
+            prbench.register_all_environments()
+        except ModuleNotFoundError as e:
+            print("prbench is not installed. Please install it with `pip install prbench` or your local package.")
+            raise e
 
-    gym_handle = f"{package_name}/{cfg.task}"
+        gym_handle = f"prbench/{cfg.task}"
+    else:
+        package_name = f"gym_{cfg.type}"
+        try:
+            importlib.import_module(package_name)
+        except ModuleNotFoundError as e:
+            print(f"{package_name} is not installed. Please install it with `pip install 'lerobot[{cfg.type}]'`")
+            raise e
+
+        gym_handle = f"{package_name}/{cfg.task}"
 
     def _make_one():
         return gym.make(gym_handle, disable_env_checker=cfg.disable_env_checker, **(cfg.gym_kwargs or {}))
