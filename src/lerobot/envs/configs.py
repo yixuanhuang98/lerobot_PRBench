@@ -151,9 +151,22 @@ class PrbenchEnv(EnvConfig):
         # Dynamically set state dimension based on task variant.
         # p0 -> 19-dim, p1 -> 39-dim (others default to p0 for now).
         task_lower = (self.task or "").lower()
-        state_dim = 19
-        if "-p1-" in task_lower or task_lower.endswith("-p1-v0"):
+        # state_dim = 19
+        # if "-p1-" in task_lower or task_lower.endswith("-p1-v0"):
+        #     state_dim = 39
+        
+        if "motion2d-p0-v0" in task_lower:
+            state_dim = 19
+        elif "motion2d-p1-v0" in task_lower:
             state_dim = 39
+        elif "motion2d-p2-v0" in task_lower:
+            state_dim = 59
+        elif "stickbutton2d-b1-v0" in task_lower:
+            state_dim = 28
+        elif "stickbutton2d-b3-v0" in task_lower:
+            state_dim = 46
+        else:
+            raise ValueError(f"Unsupported task: {self.task}")
         # Update the state feature shape if present
         if "state" in self.features:
             self.features["state"] = PolicyFeature(type=FeatureType.STATE, shape=(state_dim,))
